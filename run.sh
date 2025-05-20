@@ -8,4 +8,4 @@
 source /work/courses/3dv/23-2/ben/miniconda3/etc/profile.d/conda.sh
 conda activate /work/courses/csnlp/Team1/envs/csnlp-ben
 
-python train.py
+python train._hardpy

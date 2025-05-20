@@ -7,10 +7,9 @@ from transformers import AutoModel, AutoTokenizer
 import os
 import time
 import wandb
-import torch.nn.functional as F
 
 
-from utils.data import TripletDataset
+from utils.data import BatchDataset, FunctionNegativeTripletSelector, TripletDataset
 from utils.loss import TripletLoss, cosine_distance
 from utils.metrics import f1
 from SiameseModel import SiameseModel
@@ -45,16 +44,15 @@ def main():
         trust_remote_code=True, 
     )
 
-    # Freeze the model parameters
-    for param in encoder.parameters():
-        param.requires_grad = False
+    #Freeze the model parameters
+    # for param in encoder.parameters():
+    #     param.requires_grad = False
 
     # tokenizer.pad_token = tokenizer.eos_token
     # tokenizer.padding_side = "left"
 
-    # Add text template to beginning of each text
     train_df['text'] = "query: " + train_df['text']
-    
+
     logger.warning("Tokenizing Dataset...")
     train_ids = train_df['id']
     train_texts = train_df['text']
@@ -107,11 +105,11 @@ def main():
     test_stylometric = test_stylometric.to_numpy()
 
     # Create Dataset and DataLoader
-    train_dataset = TripletDataset(train_ids.to_numpy(), train_tokens, train_stylometric)
-    test_dataset = TripletDataset(test_ids.to_numpy(), test_tokens, test_stylometric)
+    train_dataset = BatchDataset(train_ids.to_numpy(), train_tokens, train_stylometric)
+    test_dataset = TripletDataset(test_ids.to_numpy(), test_tokens, test_stylometric, test=True)
 
-    train_dataloader = DataLoader(train_dataset, batch_size=32, shuffle=True, pin_memory=True)
-    test_dataloader = DataLoader(test_dataset, batch_size=32, shuffle=False, pin_memory=True)
+    train_dataloader = DataLoader(train_dataset, batch_size=64, shuffle=True, pin_memory=True)
+    test_dataloader = DataLoader(test_dataset, batch_size=64, shuffle=False, pin_memory=True)
 
     # Create Model
     model = SiameseModel(encoder)
@@ -119,18 +117,25 @@ def main():
     logger.warning("Using device: " + str(device))
     model.to(device)
 
-    pdist = nn.PairwiseDistance(p=2)
-
     # Loss Function and Optimizer
     criterion = nn.TripletMarginWithDistanceLoss(
             distance_function=cosine_distance,
-            margin=0.7,
+            margin=0.6,
         )
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-5)
     scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.9)
 
+    triplet_selector = FunctionNegativeTripletSelector(
+                margin=0.6,
+            )
+
     epochs = 3
-    pos_thresh = 0.5
+    pos_thresh = 0.4
+    num_triplets = 64
+
+    anchor_acc = None
+    positive_acc = None
+    negative_acc = None
 
     logger.warning("Training Model...")
     # Training Loop
@@ -139,51 +144,60 @@ def main():
         for i, batch in enumerate(train_dataloader):
             start_time = time.time()
 
-            a_input_ids, p_input_ids, n_input_ids, \
-            a_attention_mask, p_attention_mask, n_attention_mask, \
-            a_styolometric_features, p_styolometric_features, n_styolometric_features = batch
+            a_ids, a_input_ids, a_attention_mask, a_styolometric_features = batch
 
             a_input_ids = a_input_ids.to(device)
-            p_input_ids = p_input_ids.to(device)
-            n_input_ids = n_input_ids.to(device)
             a_attention_mask = a_attention_mask.to(device)
-            p_attention_mask = p_attention_mask.to(device)
-            n_attention_mask = n_attention_mask.to(device)
             a_styolometric_features = a_styolometric_features.to(device)
-            p_styolometric_features = p_styolometric_features.to(device)
-            n_styolometric_features = n_styolometric_features.to(device)
 
             # Forward pass
             anchor = {
                 'input_ids': a_input_ids,
                 'attention_mask': a_attention_mask
             }
-            positive = {
-                'input_ids': p_input_ids,
-                'attention_mask': p_attention_mask
-            }
-            negative = {    
-                'input_ids': n_input_ids,
-                'attention_mask': n_attention_mask
-            }
 
             # Forward pass
             anchor_output = model(anchor, a_styolometric_features)
-            positive_output = model(positive, p_styolometric_features)
-            negative_output = model(negative, n_styolometric_features)
 
-            loss = criterion(anchor_output, positive_output, negative_output)
+            triplets = triplet_selector.get_triplets(anchor_output, a_ids)
 
-            # Backward pass
-            loss.backward()
+            if len(triplets) == 0:
+                continue
 
-            optimizer.step()
-            optimizer.zero_grad(set_to_none=True)
+            anchor = anchor_output[triplets[:, 0]]
+            positive = anchor_output[triplets[:, 1]]
+            negative = anchor_output[triplets[:, 2]]
+
+            if anchor_acc is None:
+                anchor_acc = anchor
+                positive_acc = positive
+                negative_acc = negative
+            else:
+                anchor_acc = torch.cat((anchor_acc, anchor), dim=0)
+                positive_acc = torch.cat((positive_acc, positive), dim=0)
+                negative_acc = torch.cat((negative_acc, negative), dim=0)
+
+
+            # Accumulate triplets until we have enough
+            if len(anchor_acc) > num_triplets:
+
+                loss = criterion(anchor_acc, positive_acc, negative_acc)
+
+                # Backward pass
+                loss.backward()
+
+                optimizer.step()
+                
+                optimizer.zero_grad(set_to_none=True)
+
+                anchor_acc = None
+                positive_acc = None
+                negative_acc = None
 
             
             if (i+1) % 100 == 0:
-                pos_dist = cosine_distance(anchor_output, positive_output)
-                neg_dist = cosine_distance(anchor_output, negative_output)
+                pos_dist = cosine_distance(anchor, positive)
+                neg_dist = cosine_distance(anchor, negative)
 
                 pos_preds = pos_dist < pos_thresh
                 neg_preds = neg_dist < pos_thresh
@@ -199,9 +213,6 @@ def main():
 
                 acc = (preds == labels).float().mean()
 
-                pos_pdist = pdist(anchor_output, positive_output)
-                neg_pdist = pdist(anchor_output, negative_output)
-
                 logger.warning(f"Epoch [{epoch+1}/{epochs}], Step [{i+1}/{len(train_dataloader)}], Loss: {loss.item():.4f}, F1: {f1_score:.4f}, Acc: {acc:.4f} , Time: {time.time() - start_time:.2f}s")
                 wandb.log({
                     "epoch": epoch + 1,
@@ -211,8 +222,6 @@ def main():
                 })
                 logger.warning(str(torch.mean(pos_dist)))
                 logger.warning(str(torch.mean(neg_dist)))
-                logger.warning(str(torch.mean(pos_pdist)))
-                logger.warning(str(torch.mean(neg_pdist)))
 
             if (i+1) % 1000 == 0:
                 # (Mini) Evaluation Loop
@@ -300,7 +309,8 @@ def main():
         f1_scores = []
         acc_scores = []
         with torch.no_grad():
-            for i, batch in enumerate(test_dataloader):
+            for j, batch in enumerate(test_dataloader):
+
                 a_input_ids, p_input_ids, n_input_ids, \
                 a_attention_mask, p_attention_mask, n_attention_mask, \
                 a_styolometric_features, p_styolometric_features, n_styolometric_features = batch
@@ -339,8 +349,8 @@ def main():
                 pos_dist = cosine_distance(anchor_output, positive_output)
                 neg_dist = cosine_distance(anchor_output, negative_output)
 
-                pos_preds = pos_dist < 0.5
-                neg_preds = neg_dist < 0.5
+                pos_preds = pos_dist < pos_thresh
+                neg_preds = neg_dist < pos_thresh
                 
                 pos_labels = torch.ones_like(pos_preds)
                 neg_labels = torch.zeros_like(neg_preds)
@@ -353,17 +363,16 @@ def main():
 
                 f1_scores.append(f1_score)
 
-                acc = (preds == labels).float().mean()
+                acc = (preds == labels).float().mean().cpu().item()
 
-                acc_scores.append(acc.cpu().item())
+                acc_scores.append(acc)
 
             logger.warning(f"Test F1 Score: {np.mean(f1_scores):.4f}")
-            # logger.warning(f"Test Loss: {np.mean(loss):.4f}")
             logger.warning(f"Test Acc: {np.mean(acc_scores):.4f}")
             wandb.log({
-                # "test_loss": np.mean(loss),
+                # "test_loss": np.mean(loss),s
                 "test_f1": np.mean(f1_scores),
-                "test_acc": acc,
+                "test_acc": np.mean(acc_scores),
             })
 
         # Save Model

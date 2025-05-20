@@ -11,5 +11,5 @@ class TripletLoss(nn.Module):
         return torch.mean(torch.clamp(pos_dist - neg_dist + self.margin, min=0.0))
     
 def cosine_distance(a, b):
-    return 1 - torch.nn.functional.cosine_similarity(a, b)
+    return 1 - (torch.nn.functional.cosine_similarity(a, b) + 1 ) / 2
 
