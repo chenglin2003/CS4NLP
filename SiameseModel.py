@@ -9,24 +9,16 @@ class SiameseModel(torch.nn.Module):
         self.seq_model = seq_model
 
         self.styolometric = nn.Sequential(
-            nn.Linear(58, 128),
-            nn.BatchNorm1d(128),
+            nn.Linear(58, 64),
+            nn.BatchNorm1d(64),
             nn.ReLU(),
-            nn.Linear(128, 256),
-            nn.BatchNorm1d(256),
-            nn.ReLU(),
-            nn.Linear(256, 256),
-            nn.ReLU(),
-            nn.Linear(256, 256),
-            nn.ReLU(),
+            nn.Linear(64, 128),
         )
 
         self.fc = nn.Sequential(
-            nn.Linear(seq_model.config.hidden_size+256, 512),
+            nn.Linear(seq_model.config.hidden_size+128, 512),
             nn.ReLU(),
-            nn.Linear(512, 768),
-            nn.ReLU(),
-            nn.Linear(768, 1024),
+            nn.Linear(512, 768)
         )
 
         if pooling == 'mean':
@@ -61,4 +53,21 @@ class SiameseModel(torch.nn.Module):
 
         x = F.normalize(x, p=2, dim=1)
 
+        return x
+    
+class StylometricModel(nn.Module):
+    def __init__(self):
+        super(StylometricModel, self).__init__()
+        self.fc = nn.Sequential(
+            nn.Linear(58, 64),
+            nn.ReLU(),
+            nn.BatchNorm1d(64),
+            nn.Linear(64, 128),
+            nn.ReLU(),
+            nn.Linear(128, 256),
+        )
+
+    def forward(self, _, x):
+        x = self.fc(x)
+        x = F.normalize(x, p=2, dim=1)
         return x

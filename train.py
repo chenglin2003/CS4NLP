@@ -46,8 +46,8 @@ def main():
     )
 
     # Freeze the model parameters
-    for param in encoder.parameters():
-        param.requires_grad = False
+    # for param in encoder.parameters():
+    #     param.requires_grad = False
 
     # tokenizer.pad_token = tokenizer.eos_token
     # tokenizer.padding_side = "left"
@@ -110,8 +110,8 @@ def main():
     train_dataset = TripletDataset(train_ids.to_numpy(), train_tokens, train_stylometric)
     test_dataset = TripletDataset(test_ids.to_numpy(), test_tokens, test_stylometric)
 
-    train_dataloader = DataLoader(train_dataset, batch_size=32, shuffle=True, pin_memory=True)
-    test_dataloader = DataLoader(test_dataset, batch_size=32, shuffle=False, pin_memory=True)
+    train_dataloader = DataLoader(train_dataset, batch_size=16, shuffle=True, pin_memory=True)
+    test_dataloader = DataLoader(test_dataset, batch_size=16, shuffle=False, pin_memory=True)
 
     # Create Model
     model = SiameseModel(encoder)

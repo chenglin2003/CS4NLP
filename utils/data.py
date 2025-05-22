@@ -1,4 +1,5 @@
 from torch.utils.data import Dataset, DataLoader
+from torch.utils.data.sampler import Sampler
 import torch
 import numpy as np
 from utils.loss import cosine_distance
@@ -7,6 +8,8 @@ import torch.nn.functional as F
 
 from transformers.utils import logging
 logger = logging.get_logger("transformers")
+
+
 
 class TripletDataset(Dataset):
     def __init__(self, id, tokens, styolometric_features, test=False):
@@ -73,6 +76,39 @@ class TripletDataset(Dataset):
         return anchor_input_ids, positive_input_ids, negative_input_ids, \
                anchor_attention_mask, positive_attention_mask, negative_attention_mask, \
                anchor_styolometric_features, positive_styolometric_features, negative_styolometric_features 
+    
+class PairDataset(Dataset):
+    def __init__(self, id, tokens, styolometric_features):
+        super().__init__()
+        self.id = id
+        self.input_ids = tokens['input_ids']
+        self.attention_mask = tokens['attention_mask']
+        
+        self.styolometric_features = torch.from_numpy(styolometric_features).float()
+        self.id_set = set(self.id)
+        self.id_to_indices = {id: np.where(self.id == id)[0]
+                                    for id in self.id_set}
+        
+    def __len__(self):
+        return len(self.id)
+    
+    def __getitem__(self, idx):
+        anchor_input_ids = self.input_ids[idx]
+        anchor_attention_mask = self.attention_mask[idx]
+        anchor_id = self.id[idx]
+        anchor_styolometric_features = self.styolometric_features[idx]
+
+        # Get a positive sample
+        positive_indices = self.id_to_indices[anchor_id]
+        positive_indices = positive_indices[positive_indices != idx]
+        positive_idx = np.random.choice(positive_indices)
+        positive_input_ids = self.input_ids[positive_idx]
+        positive_attention_mask = self.attention_mask[positive_idx]
+        positive_styolometric_features = self.styolometric_features[positive_idx]
+
+        return anchor_id, anchor_input_ids, anchor_attention_mask, anchor_styolometric_features, \
+               anchor_id, positive_input_ids, positive_attention_mask, positive_styolometric_features
+    
     
 class BatchDataset(Dataset):
     def __init__(self, id, tokens, styolometric_features):
@@ -142,3 +178,102 @@ class FunctionNegativeTripletSelector():
         triplets = np.array(triplets)
 
         return torch.LongTensor(triplets)
+    
+
+# class NCEDataset(Dataset):
+#     def __init__(self, id, tokens, styolometric_features, num_negative=4):
+#         super().__init__()
+#         self.id = id
+#         self.input_ids = tokens['input_ids']
+#         self.attention_mask = tokens['attention_mask']
+        
+#         self.styolometric_features = torch.from_numpy(styolometric_features).float()
+#         self.id_set = set(self.id)
+#         self.id_to_indices = {id: np.where(self.id == id)[0]
+#                                     for id in self.id_set}
+        
+#         self.num_negative = num_negative
+        
+#     def __len__(self):
+#         return len(self.id)
+    
+#     def __getitem__(self, idx):
+#         anchor_input_ids = self.input_ids[idx]
+#         anchor_attention_mask = self.attention_mask[idx]
+#         anchor_id = self.id[idx]
+#         anchor_styolometric_features = self.styolometric_features[idx]
+
+#         # Get a positive sample
+#         positive_indices = self.id_to_indices[anchor_id]
+#         positive_indices = positive_indices[positive_indices != idx]
+#         positive_idx = np.random.choice(positive_indices)
+#         positive_input_ids = self.input_ids[positive_idx]
+#         positive_attention_mask = self.attention_mask[positive_idx]
+#         positive_styolometric_features = self.styolometric_features[positive_idx]
+
+#         # Get negative samples
+#         negative_ids = np.random.choice(list(self.id_set - {anchor_id}), self.num_negative, replace=False)
+#         negative_indices = []
+#         for negative_id in negative_ids:
+#             indices = self.id_to_indices[negative_id]
+#             negative_indices.append(np.random.choice(indices))
+#         negative_indices = np.array(negative_indices)
+#         negative_input_ids = self.input_ids[negative_indices]
+#         negative_attention_mask = self.attention_mask[negative_indices]
+#         negative_styolometric_features = self.styolometric_features[negative_indices]
+
+#         return {
+#             'anchor_id': anchor_id,
+#             'positive_id': self.id[positive_idx],
+#             'negative_ids': self.id[negative_indices],
+#             'anchor_input_ids': anchor_input_ids,
+#             'anchor_attention_mask': anchor_attention_mask,
+#             'anchor_styolometric_features': anchor_styolometric_features,
+#             'positive_input_ids': positive_input_ids,
+#             'positive_attention_mask': positive_attention_mask,
+#             'positive_styolometric_features': positive_styolometric_features,
+#             'negative_input_ids': negative_input_ids,
+#             'negative_attention_mask': negative_attention_mask,
+#             'negative_styolometric_features': negative_styolometric_features
+#         }
+
+class NCEDataset(Dataset):
+    def __init__(self, id, tokens, styolometric_features):
+        super().__init__()
+        self.id = id
+        self.input_ids = tokens['input_ids']
+        self.attention_mask = tokens['attention_mask']
+        
+        self.styolometric_features = torch.from_numpy(styolometric_features).float()
+        self.id_set = set(self.id)
+        self.id_list = list(self.id_set)
+        self.id_to_indices = {id: np.where(self.id == id)[0]
+                                    for id in self.id_set}
+
+        
+    def __len__(self):
+        return len(self.id_list)
+    
+    def __getitem__(self, author_id):
+        author_indices = self.id_to_indices[self.id_list[author_id]]
+        idx = np.random.choice(author_indices, 2)
+
+        anchor_input_ids = self.input_ids[idx[0]]
+        anchor_attention_mask = self.attention_mask[idx[0]]
+        anchor_id = self.id[idx[0]]
+        anchor_styolometric_features = self.styolometric_features[idx[0]]
+
+        # Get a positive sample
+        positive_input_ids = self.input_ids[idx[1]]
+        positive_attention_mask = self.attention_mask[idx[1]]
+        positive_styolometric_features = self.styolometric_features[idx[1]]
+
+        return {
+            'anchor_id': anchor_id,
+            'anchor_input_ids': anchor_input_ids,
+            'anchor_attention_mask': anchor_attention_mask,
+            'anchor_styolometric_features': anchor_styolometric_features,
+            'positive_input_ids': positive_input_ids,
+            'positive_attention_mask': positive_attention_mask,
+            'positive_styolometric_features': positive_styolometric_features
+        }
