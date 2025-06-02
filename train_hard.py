@@ -14,7 +14,7 @@ from utils.data import BatchDataset, FunctionNegativeTripletSelector, TripletDat
 from utils.loss import TripletLoss, cosine_distance
 from utils.metrics import f1
 from utils.eval import eval_model
-from SiameseModel import SiameseModel, StylometricModel
+from models.SiameseModel import SiameseModel, StylometricModel
 
 from transformers.utils import logging
 logging.set_verbosity_warning()

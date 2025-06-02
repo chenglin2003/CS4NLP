@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 class SiameseModel(torch.nn.Module):
-    def __init__(self, seq_model, pooling='mean'):
+    def __init__(self, seq_model, pooling='last'):
         super(SiameseModel, self).__init__()
 
         self.seq_model = seq_model
@@ -18,13 +18,17 @@ class SiameseModel(torch.nn.Module):
         self.fc = nn.Sequential(
             nn.Linear(seq_model.config.hidden_size+128, 512),
             nn.ReLU(),
-            nn.Linear(512, 768)
+            nn.Linear(512, 768),
         )
 
         if pooling == 'mean':
             self.pooling = self.mean_pooling
         elif pooling == 'cls':
             self.pooling = self.cls_pooling
+        elif pooling == 'last':
+            self.pooling = self.last_pooling
+        else:
+            raise ValueError(f"Pooling method '{pooling}' is not supported. Choose from 'mean', 'cls', or 'last'.")
 
     def mean_pooling(self, model_output, attention_mask):
         token_embeddings = model_output[0] #First element of model_output contains all token embeddings
@@ -34,6 +38,9 @@ class SiameseModel(torch.nn.Module):
     def cls_pooling(self, model_output, _):
         token_embeddings = model_output[0]
         return token_embeddings[:, 0, :]
+    
+    def last_pooling(self, model_output, _):
+        return model_output.last_hidden_state[:, 0]
 
     def forward(self, text, styolometric_features):
 
@@ -41,33 +48,10 @@ class SiameseModel(torch.nn.Module):
 
         x = self.pooling(x, text['attention_mask'])
 
-        x = F.normalize(x, p=2, dim=1)
-
         s = self.styolometric(styolometric_features)
-
-        s = F.normalize(s, p=2, dim=1)
 
         x = torch.cat((x, s), dim=1)
 
         x = self.fc(x)
 
-        x = F.normalize(x, p=2, dim=1)
-
-        return x
-    
-class StylometricModel(nn.Module):
-    def __init__(self):
-        super(StylometricModel, self).__init__()
-        self.fc = nn.Sequential(
-            nn.Linear(58, 64),
-            nn.ReLU(),
-            nn.BatchNorm1d(64),
-            nn.Linear(64, 128),
-            nn.ReLU(),
-            nn.Linear(128, 256),
-        )
-
-    def forward(self, _, x):
-        x = self.fc(x)
-        x = F.normalize(x, p=2, dim=1)
         return x

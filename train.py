@@ -13,7 +13,7 @@ import torch.nn.functional as F
 from utils.data import TripletDataset
 from utils.loss import TripletLoss, cosine_distance
 from utils.metrics import f1
-from SiameseModel import SiameseModel
+from models.SiameseModel import SiameseModel
 
 from transformers.utils import logging
 logging.set_verbosity_warning()
